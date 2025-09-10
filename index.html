@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Calculadora Under Limite (Back) — Didática</title>
+  <style>
+    :root{font-family:Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;}
+    body{max-width:980px;margin:28px auto;padding:20px;background:#f7fafc;color:#0f172a}
+    h1{margin:0 0 8px;font-size:20px}
+    .card{background:white;border-radius:12px;padding:16px;margin-bottom:14px;box-shadow:0 6px 18px rgba(12,20,30,0.06)}
+    label{display:block;font-size:13px;margin-bottom:6px}
+    input, select, button{font-size:15px;padding:8px 10px;border-radius:8px;border:1px solid #e6edf3;width:100%;box-sizing:border-box}
+    .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+    .row{display:flex;gap:12px}
+    .small{font-size:13px;color:#334155}
+    table{width:100%;border-collapse:collapse;margin-top:12px}
+    th,td{padding:8px;border-bottom:1px solid #eef2f7;text-align:center}
+    .muted{color:#64748b;font-size:13px}
+    .actions{display:flex;gap:8px}
+    .btn-primary{background:#0ea5a4;color:white;border:none}
+    .btn-ghost{background:transparent;border:1px solid #e6edf3}
+    footer{margin-top:18px;font-size:13px;color:#475569}
+    @media(max-width:720px){.grid{grid-template-columns:1fr} .row{flex-direction:column}}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Calculadora Under Limite (Back)</h1>
+    <p class="small">Calcule a odd estimada no mercado <strong>Under Limite</strong> usando a técnica de ticks (linear). Informe a odd de entrada, minuto da entrada e minuto alvo.</p>
+  </div>
+
+  <div class="card">
+    <div class="grid">
+      <div>
+        <label>Odd inicial (onde você fez o BACK)</label>
+        <input id="oddInicial" type="number" step="0.01" min="1.01" value="2.00">
+        <div class="muted">Ex: 2.00</div>
+      </div>
+
+      <div>
+        <label>Minuto da entrada</label>
+        <input id="minutoEntrada" type="number" min="0" max="89" value="60">
+        <div class="muted">Informe o minuto em que você entrou (0–89).</div>
+      </div>
+
+      <div>
+        <label>Minuto alvo (onde quer estimar a odd)</label>
+        <input id="minutoAlvo" type="number" min="1" max="90" value="70">
+        <div class="muted">Minuto onde quer a estimativa (≥ minuto da entrada, ≤ 90).</div>
+      </div>
+    </div>
+
+    <div style="margin-top:12px" class="row">
+      <div style="flex:1">
+        <label>Modelo</label>
+        <select id="modelo">
+          <option value="linear">Linear (divide ticks igualmente pelo tempo)</option>
+          <option value="accelerated">Acelerado no fim (curva — aproximação)</option>
+        </select>
+      </div>
+
+      <div style="width:200px">
+        <label>Ticks totais estimados (opcional)</label>
+        <input id="ticksEstimados" type="number" min="0" placeholder="auto">
+        <div class="muted">Se vazio, será calculado automaticamente até 1.01.</div>
+      </div>
+    </div>
+
+    <div style="margin-top:12px" class="actions">
+      <button class="btn-primary" id="calcularBtn">Calcular</button>
+      <button class="btn-ghost" id="tabelaBtn">Gerar tabela (min a min)</button>
+    </div>
+
+    <div id="resultado" style="margin-top:14px"></div>
+  </div>
+
+  <div class="card" id="tabelaCard" style="display:none">
+    <h3>Tabela minuto a minuto</h3>
+    <div id="tabelaContainer"></div>
+  </div>
+
+  <footer>
+    Método: usa a tabela padrão de ticks (Betfair-style). A aproximação é <strong>didática</strong> — fatores do jogo podem acelerar/retardar a queda.
+  </footer>
+
+<script>
+// Tabela de ticks (faixas) usada neste cálculo — formato: [minInclusive, maxExclusive, tickSize]
+const TICK_TABLE = [
+  [1.01, 2.00, 0.01],
+  [2.00, 3.00, 0.02],
+  [3.00, 4.00, 0.05],
+  [4.00, 6.00, 0.10],
+  [6.00, 10.00, 0.20],
+  [10.00, 20.00, 0.50],
+  [20.00, 30.00, 1.00],
+  [30.00, 50.00, 2.00],
+  [50.00, 100.00,5.00],
+  [100.00,1000.00,10.00]
+];
+
+function getTickForOdd(odd){
+  for(const [min,max,t] of TICK_TABLE){
+    // treat boundaries: if odd === max and next interval starts at max, use next interval's tick
+    if(odd >= min && odd < max) return t;
+  }
+  // fallback
+  return 10;
+}
+
+// conta quantos ticks existe ao descer de oddA até oddB (oddA > oddB)
+function countTicksBetween(oddA, oddB){
+  if(oddA <= oddB) return 0;
+  let ticks = 0;
+  let current = oddA;
+  // ande tick a tick: enquanto current > oddB
+  // para evitar loops infinitos, limite iterações
+  let safety = 200000;
+  while(current > oddB + 1e-9 && safety-->0){
+    const tick = getTickForOdd(Math.max(oddB + 0.000001, current - 1e-9));
+    // decrement by tick but careful with boundaries: next odd = current - tick
+    const next = +(current - tick).toFixed(8);
+    // if next < oddB, contamos parcial (mas queremos ticks inteiros) -> apenas pare quando atingir <= oddB
+    ticks += 1;
+    current = next;
+  }
+  return ticks;
+}
+
+// aplica N ticks de queda a partir de oddInicial e devolve odd resultante
+function applyTicksDown(oddInicial, ticksToApply){
+  let current = oddInicial;
+  let ticksLeft = Math.round(ticksToApply);
+  let safety = 200000;
+  while(ticksLeft>0 && safety-->0){
+    const tick = getTickForOdd(Math.max(1.01, current - 1e-9));
+    current = +(current - tick).toFixed(8);
+    if(current < 1.01) { current = 1.01; break; }
+    ticksLeft -= 1;
+  }
+  return +current.toFixed(2);
+}
+
+function formatOdd(n){ return Number.isFinite(n) ? n.toFixed(2) : '-'; }
+
+function calculate(){
+  const oddIni = parseFloat(document.getElementById('oddInicial').value);
+  const minutoEntrada = parseInt(document.getElementById('minutoEntrada').value,10);
+  const minutoAlvo = parseInt(document.getElementById('minutoAlvo').value,10);
+  const modelo = document.getElementById('modelo').value;
+  const ticksEstimadosInput = document.getElementById('ticksEstimados').value;
+
+  if(isNaN(oddIni) || oddIni < 1.01) return alert('Informe uma odd inicial válida (>= 1.01)');
+  if(isNaN(minutoEntrada) || minutoEntrada<0 || minutoEntrada>89) return alert('Minuto de entrada inválido (0–89)');
+  if(isNaN(minutoAlvo) || minutoAlvo<minutoEntrada || minutoAlvo>90) return alert('Minuto alvo inválido (deve ser >= minuto de entrada e ≤ 90)');
+
+  const minutosRestantes = 90 - minutoEntrada;
+  if(minutosRestantes <=0) return alert('Não há tempo restante no jogo para estimativa.');
+
+  // ticks até 1.01 (auto)
+  const ticksAtéFinal = ticksEstimadosInput ? parseFloat(ticksEstimadosInput) : countTicksBetween(oddIni,1.01);
+  if(ticksAtéFinal <=0) return alert('Não foi possível calcular ticks até 1.01.');
+
+  // modelo linear ou acelerado
+  let ticksPorMinuto = ticksAtéFinal / minutosRestantes;
+  if(modelo === 'accelerated'){
+    // aproxima curva: menos ticks por minuto no início, mais no final
+    // simplificação: multiplicador médio 1, mas para estimativa ajustamos usando fator exponencial por minuto.
+    // aqui apenas devolvemos a média; tabela minuto a minuto vai usar função diferenciada
+  }
+
+  const minutosPassados = minutoAlvo - minutoEntrada;
+  const ticksPercorridos = (modelo === 'linear') ? ticksPorMinuto * minutosPassados : simulateTicksElapsedAccelerated(ticksAtéFinal, minutosRestantes, minutosPassados);
+
+  const oddEstim = applyTicksDown(oddIni, ticksPercorridos);
+
+  // show result
+  const resDiv = document.getElementById('resultado');
+  resDiv.innerHTML = `
+    <div class="card"> 
+      <div><strong>Odd estimada aos ${minutoAlvo}'</strong> — <span style="font-size:18px">${formatOdd(oddEstim)}</span></div>
+      <div class="small" style="margin-top:6px">Ticks até 1.01 (estimados): <strong>${Math.round(ticksAtéFinal)}</strong>. Ticks por minuto (média): <strong>${(ticksPorMinuto).toFixed(2)}</strong>.</div>
+      <div class="small" style="margin-top:6px">Ticks aplicados até o minuto alvo: <strong>${Math.round(ticksPercorridos)}</strong>.</div>
+    </div>
+  `;
+}
+
+function simulateTicksElapsedAccelerated(totalTicks, totalMinutes, minutesPassed){
+  // modelo simples de aceleração: usa uma curva quadrática (cresce mais no fim)
+  // proporção do tempo que passou (0..1)
+  const p = minutesPassed/totalMinutes;
+  // função de acumulação: p^alpha / normalization. Usaremos alpha=1.6 para acelerar
+  const alpha = 1.6;
+  const proportion = Math.pow(p, alpha);
+  // normalizar para que proporção ao chegar em p=1 seja 1
+  const normalization = 1; // pow(1,alpha)=1
+  return totalTicks * (proportion/normalization);
+}
+
+// tabela minuto-a-minuto
+function gerarTabela(){
+  const oddIni = parseFloat(document.getElementById('oddInicial').value);
+  const minutoEntrada = parseInt(document.getElementById('minutoEntrada').value,10);
+  const modelo = document.getElementById('modelo').value;
+  const ticksEstimadosInput = document.getElementById('ticksEstimados').value;
+
+  if(isNaN(oddIni) || oddIni < 1.01) return alert('Informe uma odd inicial válida (>= 1.01)');
+  if(isNaN(minutoEntrada) || minutoEntrada<0 || minutoEntrada>89) return alert('Minuto de entrada inválido (0–89)');
+
+  const minutosRestantes = 90 - minutoEntrada;
+  if(minutosRestantes <=0) return alert('Não há tempo restante no jogo para estimativa.');
+
+  const ticksAtéFinal = ticksEstimadosInput ? parseFloat(ticksEstimadosInput) : countTicksBetween(oddIni,1.01);
+  const ticksPorMinuto = ticksAtéFinal / minutosRestantes;
+
+  const rows = [];
+  for(let m = minutoEntrada; m<=90; m++){
+    const elapsed = m - minutoEntrada;
+    const ticksElapsed = (modelo === 'linear') ? ticksPorMinuto * elapsed : simulateTicksElapsedAccelerated(ticksAtéFinal, minutosRestantes, elapsed);
+    const oddAt = applyTicksDown(oddIni, ticksElapsed);
+    rows.push({minuto: m, odd: oddAt, ticks: Math.round(ticksElapsed)});
+  }
+
+  // build table
+  const container = document.getElementById('tabelaContainer');
+  let html = '<table><thead><tr><th>Minuto</th><th>Odd estimada</th><th>Ticks aplicados</th></tr></thead><tbody>';
+  for(const r of rows){ html += `<tr><td>${r.minuto}</td><td>${formatOdd(r.odd)}</td><td>${r.ticks}</td></tr>`; }
+  html += '</tbody></table>';
+  container.innerHTML = html;
+  document.getElementById('tabelaCard').style.display = 'block';
+}
+
+// events
+document.getElementById('calcularBtn').addEventListener('click', calculate);
+document.getElementById('tabelaBtn').addEventListener('click', gerarTabela);
+
+// small convenience: update minutoAlvo min when user changes minutoEntrada
+const entradaInput = document.getElementById('minutoEntrada');
+entradaInput.addEventListener('input', ()=>{
+  const v = parseInt(entradaInput.value,10) || 0;
+  const alvo = document.getElementById('minutoAlvo');
+  alvo.min = v;
+  if(parseInt(alvo.value,10) < v) alvo.value = v;
+});
+
+</script>
+</body>
+</html>
